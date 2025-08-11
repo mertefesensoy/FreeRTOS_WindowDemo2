@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include <string.h>
+#include <conio.h>
 
 #include <FreeRTOS.h>
 #include <task.h>
 #include <semphr.h>
+#include <stdarg.h>
+
 
 #define USE_MUTEX 1
 
@@ -25,6 +28,55 @@ static SemaphoreHandle_t xResLock;     /* actually a mutex */
 static SemaphoreHandle_t xResLock;     /* binary semaphore */
 #endif
 
+static TaskHandle_t hL, hM, hH;
+
+static char stateChar(eTaskState s, TaskHandle_t h) {
+    if (xTaskGetCurrentTaskHandle() == h) return 'R';
+    switch (s) {
+    case eReady:     return 'r';
+    case eBlocked:   return 'B';
+    case eSuspended: return 'S';
+    default:         return '?';
+    }
+}
+
+static void vStateProbe(void* pv) {
+    (void)pv;
+    for (;;) {
+        eTaskState sL = eTaskGetState(hL);
+        eTaskState sM = eTaskGetState(hM);
+        eTaskState sH = eTaskGetState(hH);
+        //printf("[t=%ums] L:%c M:%c H:%c\n",
+            //(unsigned)pdTICKS_TO_MS(xTaskGetTickCount()),
+            //stateChar(sL, hL), stateChar(sM, hM), stateChar(sH, hH));
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+static void vConsoleCtl(void* pv) {
+    (void)pv;
+    printf("Keys: m= suspend M, n= resume M, s= suspend L, d= resume L, "
+        "a= suspend H, f= resume H, e= trigger event, q= SuspendAll, w= ResumeAll\n");
+    for (;;) {
+        if (_kbhit()) {
+            int c = _getch();
+            switch (c) {
+            case 'm': vTaskSuspend(hM); puts("[ctl] Suspended M"); break;
+            case 'n': vTaskResume(hM); puts("[ctl] Resumed M"); break;
+            case 's': vTaskSuspend(hL); puts("[ctl] Suspended L"); break;
+            case 'd': vTaskResume(hL);  puts("[ctl] Resumed L"); break;
+            case 'a': vTaskSuspend(hH); puts("[ctl] Suspended H"); break;
+            case 'f': vTaskResume(hH);  puts("[ctl] Resumed H"); break;
+            case 'q': vTaskSuspendAll(); puts("[ctl] SuspendAll"); break;
+            case 'w': xTaskResumeAll();  puts("[ctl] ResumeAll"); break;
+            case 'e': xTaskNotifyGive(hH); puts("[ctl] Event -> notified H"); break;
+               
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 /* Utility: timestamped print */
 static void logf(const char* tag, const char* fmt, ...)
 {
@@ -37,6 +89,7 @@ static void logf(const char* tag, const char* fmt, ...)
     printf("\n");
     fflush(stdout);
 }
+
 
 /* Simulated “resource”: print a string char-by-char WHILE holding the lock */
 static void use_shared_resource(const char* who, const char* msg)
@@ -151,10 +204,13 @@ int main(void)
 
     /* Create tasks: L lowest, M middle, H highest */
     BaseType_t ok = pdPASS;
-    ok &= xTaskCreate(vTaskL, "L", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_LOW, NULL);
-    ok &= xTaskCreate(vTaskM, "M", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_MEDIUM, NULL);
-    ok &= xTaskCreate(vTaskH, "H", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_HIGH, NULL);
+    ok &= xTaskCreate(vTaskL, "L", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_LOW, &hL);
+    ok &= xTaskCreate(vTaskM, "M", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_MEDIUM, &hM);
+    ok &= xTaskCreate(vTaskH, "H", configMINIMAL_STACK_SIZE + 512, NULL, PRIO_HIGH, &hH);
+    ok &= xTaskCreate(vStateProbe, "Probe", configMINIMAL_STACK_SIZE + 256, NULL, tskIDLE_PRIORITY, NULL);
+    ok &= xTaskCreate(vConsoleCtl, "Ctl", configMINIMAL_STACK_SIZE + 256, NULL, PRIO_MEDIUM, NULL);
     configASSERT(ok == pdPASS);
+
 
     vTaskStartScheduler();
 
